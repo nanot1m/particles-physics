@@ -1,4 +1,4 @@
-import { MouseEvent, useRef } from "react"
+import { PointerEvent, useRef } from "react"
 import "./App.css"
 import * as V from "./modules/vec"
 
@@ -154,6 +154,10 @@ function update(_dt: number, state: State) {
 		const newParticle = cloneParticle(particle)
 
 		applyForces(newParticle, state)
+		if (V.eq(particle.vel, V.ZERO)) {
+			continue
+		}
+
 		updateParticle(newParticle, 1)
 
 		if (collisionCheck(newParticle, state)) {
@@ -193,10 +197,10 @@ function renderFps(ctx: CanvasRenderingContext2D, fps: number) {
 }
 
 function initCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
-	const screenWidth = document.documentElement.clientWidth
-  const screenHeight = document.documentElement.clientHeight
-  const width = 128
-  const height = 128
+	const screenWidth = window.innerWidth
+	const screenHeight = window.innerHeight
+	const width = 128
+	const height = 128
 	const state: State = {
 		grid: {
 			width,
@@ -258,18 +262,16 @@ function initCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
 function App() {
 	const appRef = useRef<ReturnType<typeof initCanvas>>()
 
-	function handlePointerDown() {
+	function handlePointerDown(event: PointerEvent) {
 		if (appRef.current) {
 			appRef.current.state.mouse.down = true
+      handlePointerMove(event)
 		}
 	}
 
-	function handlePointerMove(event: MouseEvent) {
+	function handlePointerMove(event: PointerEvent) {
 		if (appRef.current) {
-			const offsetX =
-				event.clientX - event.currentTarget.getBoundingClientRect().left
-			const offsetY =
-				event.clientY - event.currentTarget.getBoundingClientRect().top
+			const {offsetX, offsetY} = event.nativeEvent
 			const x = Math.floor(offsetX / appRef.current.state.config.cellSize)
 			const y = Math.floor(offsetY / appRef.current.state.config.cellSize)
 			appRef.current.state.mouse.pos = V.vec(x, y)
@@ -294,7 +296,7 @@ function App() {
 	}
 
 	return (
-		<div>
+		<div className="App">
 			<canvas
 				style={{ cursor: "crosshair" }}
 				ref={handleCanvasRef}

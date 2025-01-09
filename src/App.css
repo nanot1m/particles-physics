@@ -6,3 +6,7 @@
 canvas {
   touch-action: none;
 }
+
+.App {
+  display: flex;
+}
