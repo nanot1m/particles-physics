@@ -1,18 +1,30 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { PointerEvent, useRef } from "react"
 import "./App.css"
 import * as V from "./modules/vec"
 
-type Particle = {
-	pos: V.Vec2
+interface Particle {
 	vel: V.Vec2
 	acc: V.Vec2
-	color: string
+	readonly color: string
+	readonly maxVel: V.Vec2
+	readonly modified: boolean
+
+	getUpdateCount(): number
+	update(dt: number): void
+	resetVelocity(): void
+	applyAcc(acc: V.Vec2): void
 }
 
-type Grid = {
-	width: number
-	height: number
-	particles: Map<string, Particle>
+interface Grid {
+	readonly width: number
+	readonly height: number
+	readonly particles: (Particle | null)[]
+	readonly modifiedParticles: Set<number>
+
+	update(dt: number, world: World): void
+	setParticle(pos: V.Vec2, particle: Particle): void
+	getParticle(pos: V.Vec2): Particle | null
 }
 
 type Config = {
@@ -35,6 +47,185 @@ type State = {
 	mouse: Mouse
 }
 
+class BaseParticle implements Particle {
+	vel: V.Vec2
+	acc: V.Vec2
+	readonly color: string
+	readonly maxVel: V.Vec2
+
+	modified: boolean = false
+
+	constructor(color: string) {
+		this.vel = V.vec(0, 0)
+		this.acc = V.vec(0, 0)
+		this.color = color
+		this.maxVel = V.vec(0, 8)
+	}
+
+	applyAcc(acc: V.Vec2): void {
+		this.acc = V.add(this.acc, acc)
+	}
+
+	getUpdateCount(): number {
+		return Math.max(
+			this.getUpdateCountVal(this.vel[0]),
+			this.getUpdateCountVal(this.vel[1]),
+		)
+	}
+
+	private getUpdateCountVal(value: number): number {
+		const abs = Math.abs(value)
+		const floored = Math.floor(abs)
+		const mod = abs - floored
+		// Treat a remainder (e.g. 0.5) as a random chance to update
+		return floored + (Math.random() < mod ? 1 : 0)
+	}
+
+	update(_dt: number): void {
+		this.vel = V.add(this.vel, this.acc)
+		const x =
+			Math.abs(this.vel[0]) > this.maxVel[0]
+				? this.maxVel[0] * Math.sign(this.vel[0])
+				: this.vel[0]
+		const y =
+			Math.abs(this.vel[1]) > this.maxVel[1]
+				? this.maxVel[1] * Math.sign(this.vel[1])
+				: this.vel[1]
+		this.vel = V.vec(x, y)
+		this.acc = V.vec(0, 0)
+
+		this.modified = !V.eq(this.vel, V.ZERO)
+	}
+
+	resetVelocity(): void {
+		this.vel = V.vec(0, 0)
+	}
+}
+
+class BaseGrid implements Grid {
+	readonly width: number
+	readonly height: number
+	readonly particles: (Particle | null)[]
+	modifiedParticles: Set<number> = new Set()
+
+	private shouldClear = true
+
+	constructor(width: number, height: number) {
+		this.width = width
+		this.height = height
+		this.particles = Array(width * height).fill(null)
+	}
+
+	update(_dt: number, world: World): void {
+		this.modifiedParticles = new Set()
+
+		if (this.shouldClear) {
+			this.clearAll()
+		}
+
+		for (let i = this.particles.length - 1; i >= 0; i--) {
+			const particle = this.particles[i]
+			if (particle) {
+				this.applyForces(particle, world)
+
+				particle.update(_dt)
+				if (!particle.modified) {
+					continue
+				}
+
+				for (let j = 0; j < particle.getUpdateCount(); j++) {
+					const newIndex = this.updatePixel(i)
+
+					// If we swapped the particle to a new location,
+					// we need to update our index to be that new one.
+					// As we are repeatedly updating the same particle.
+					if (newIndex !== i) {
+						i = newIndex
+					} else {
+						particle.resetVelocity()
+						break
+					}
+				}
+			}
+		}
+	}
+
+	private applyForces(particle: Particle, world: World): void {
+		particle.applyAcc(world.gravity)
+	}
+
+	setParticle(pos: V.Vec2, particle: Particle): void {
+		const idx = this.toIndex(pos)
+		this.particles[idx] = particle
+		this.modifiedParticles.add(idx)
+	}
+
+	getParticle(pos: V.Vec2): Particle | null {
+		const idx = this.toIndex(pos)
+		return this.particles[idx]
+	}
+
+	private clearAll(): void {
+		for (let i = 0; i < this.particles.length; i++) {
+			this.particles[i] = null
+			this.modifiedParticles.add(i)
+		}
+		this.shouldClear = false
+	}
+
+	private updatePixel(idx: number): number {
+		if (this.isEmpty(idx)) {
+			return idx
+		}
+
+		const below = idx + this.width
+		const belowLeft = below - 1
+		const belowRight = below + 1
+		const column = idx % this.width
+
+		const variants = [below]
+		if (Math.random() < 0.5) {
+			if (column > 0) {
+				variants.push(belowLeft)
+			}
+			if (column < this.width - 1) {
+				variants.push(belowRight)
+			}
+		} else {
+			if (column < this.width - 1) {
+				variants.push(belowRight)
+			}
+			if (column > 0) {
+				variants.push(belowLeft)
+			}
+		}
+
+		for (const variant of variants) {
+			if (this.isEmpty(variant)) {
+				this.swapParticles(idx, variant)
+				return variant
+			}
+		}
+
+		return idx
+	}
+
+	private toIndex(pos: V.Vec2): number {
+		return V.y(pos) * this.width + V.x(pos)
+	}
+
+	private isEmpty(idx: number): boolean {
+		return this.particles[idx] === null
+	}
+
+	private swapParticles(idxA: number, idxB: number): void {
+		const tmp = this.particles[idxA]
+		this.particles[idxA] = this.particles[idxB]
+		this.particles[idxB] = tmp
+		this.modifiedParticles.add(idxA).add(idxB)
+	}
+}
+
 function resizeCanvas(
 	canvas: HTMLCanvasElement,
 	ctx: CanvasRenderingContext2D,
@@ -51,16 +242,6 @@ function resizeCanvas(
 	canvas.style.height = `${canvasHeight}px`
 
 	ctx.scale(pixelRatio, pixelRatio)
-	ctx.imageSmoothingEnabled = false
-}
-
-function cloneParticle(particle: Particle) {
-	return {
-		pos: particle.pos,
-		vel: particle.vel,
-		acc: particle.acc,
-		color: particle.color,
-	}
 }
 
 type AppLoop = {
@@ -72,126 +253,66 @@ type AppLoop = {
 	update(): void
 }
 
-function applyForces(particle: Particle, state: State) {
-	particle.acc = V.add(particle.acc, state.world.gravity)
-}
-
-function updateParticle(particle: Particle, dt: number) {
-	particle.vel = V.add(particle.vel, V.scale(particle.acc, dt))
-	particle.pos = V.add(particle.pos, V.scale(particle.vel, dt))
-}
-
-function getParticleAtPos(pos: V.Vec2, state: State) {
-	return state.grid.particles.get(V.toString(pos))
-}
-
-function collisionCheck(particle: Particle, state: State) {
-	const existingParticle = getParticleAtPos(particle.pos, state)
-	if (existingParticle) {
-		return true
-	}
-
-	if (V.y(particle.pos) > state.grid.height - 1) {
-		return true
-	}
-
-	return false
-}
-
-function applySlope(particle: Particle, state: State) {
-	const dirs = [V.vec(-1, 1), V.vec(1, 1)]
-	const rnd = Math.random() > 0.5 ? 0 : 1
-
-	const left = V.add(particle.pos, dirs[rnd])
-	const right = V.add(particle.pos, dirs[1 - rnd])
-
-	const gridTopLeft = V.vec(0, 0)
-	const gridBottomRight = V.vec(state.grid.width - 1, state.grid.height - 1)
-
-	const positions = [left, right]
-
-	for (const pos of positions) {
-		if (!V.inRange(pos, gridTopLeft, gridBottomRight)) {
-			continue
-		}
-		if (getParticleAtPos(pos, state)) {
-			continue
-		}
-		particle.pos = pos
-		return true
-	}
-
-	return false
-}
-
-const sandColors = ["#f4a460", "#d2b48c", "#cd7f32"]
+const sandColors = ["#f4a460", "#d2b48c", "#deb887", "#cd853f"]
 
 function randomItem<T>(arr: T[]): T {
 	return arr[Math.floor(Math.random() * arr.length)]
 }
 
+const deltas = [
+	[V.vec(0, -2)],
+	[V.vec(-1, -1), V.vec(0, -1), V.vec(1, -1)],
+	[V.vec(-2, 0), V.vec(-1, 0), V.vec(0, 0), V.vec(1, 0), V.vec(2, 0)],
+	[V.vec(-1, 1), V.vec(0, 1), V.vec(1, 1)],
+	[V.vec(0, 2)],
+].flat()
+
 function handleMouse(state: State) {
 	if (state.mouse.down) {
-		if (getParticleAtPos(state.mouse.pos, state)) {
-			return
-		}
-
-		const particle = {
-			pos: state.mouse.pos,
-			vel: V.vec(0, 1),
-			acc: V.vec(0, 0),
-			color: randomItem(sandColors),
-		}
-		state.grid.particles.set(V.toString(particle.pos), particle)
+		deltas.forEach((delta) => {
+			const pos = V.add(state.mouse.pos, delta)
+			if (state.grid.getParticle(pos)) {
+				return
+			}
+			state.grid.setParticle(
+				pos,
+				new BaseParticle(randomItem(sandColors)),
+			)
+		})
 	}
 }
 
-function update(_dt: number, state: State) {
+function update(dt: number, state: State) {
 	handleMouse(state)
-
-	const nextParticles: Map<string, Particle> = new Map()
-	for (const particle of state.grid.particles.values()) {
-		const newParticle = cloneParticle(particle)
-
-		applyForces(newParticle, state)
-		if (V.eq(particle.vel, V.ZERO)) {
-			continue
-		}
-
-		updateParticle(newParticle, 1)
-
-		if (collisionCheck(newParticle, state)) {
-			if (!applySlope(newParticle, state)) {
-				newParticle.pos = particle.pos
-			}
-		}
-
-		const topLeft = V.vec(0, 0)
-		const bottomRight = V.vec(state.grid.width, state.grid.height)
-		if (V.inRange(newParticle.pos, topLeft, bottomRight)) {
-			nextParticles.set(V.toString(newParticle.pos), newParticle)
-		}
-	}
-
-	state.grid.particles = nextParticles
+	state.grid.update(dt, state.world)
 }
 
 function draw(ctx: CanvasRenderingContext2D, state: State) {
-	ctx.fillStyle = "white"
-	ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+	if (state.grid.modifiedParticles.size === 0) {
+		return
+	}
 
-	for (const particle of state.grid.particles.values()) {
-		ctx.fillStyle = particle.color
+	state.grid.modifiedParticles.forEach((idx) => {
+		const x = idx % state.grid.width
+		const y = Math.floor(idx / state.grid.width)
+		const particle = state.grid.particles[idx]
+		const color = particle?.color ?? "white"
+
+		ctx.fillStyle = color
 		ctx.fillRect(
-			V.x(particle.pos) * state.config.cellSize,
-			V.y(particle.pos) * state.config.cellSize,
+			x * state.config.cellSize,
+			y * state.config.cellSize,
 			state.config.cellSize,
 			state.config.cellSize,
 		)
-	}
+	})
 }
 
 function renderFps(ctx: CanvasRenderingContext2D, fps: number) {
+	ctx.fillStyle = "white"
+	ctx.fillRect(0, 0, 100, 14)
+	ctx.strokeStyle = "black"
+	ctx.strokeRect(0, 0, 100, 14)
 	ctx.fillStyle = "black"
 	ctx.fillText(`FPS: ${fps.toFixed(2)}`, 10, 10)
 }
@@ -199,19 +320,20 @@ function renderFps(ctx: CanvasRenderingContext2D, fps: number) {
 function initCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
 	const screenWidth = window.innerWidth
 	const screenHeight = window.innerHeight
-	const width = 128
-	const height = 128
+	const width = 256
+	const height = 256
 	const state: State = {
-		grid: {
-			width,
-			height,
-			particles: new Map(),
-		},
+		grid: new BaseGrid(width, height),
 		world: {
-			gravity: V.vec(0, 0),
+			gravity: V.vec(0, 0.1),
 		},
 		config: {
-			cellSize: Math.min(screenWidth / width, screenHeight / height),
+			cellSize: Math.max(
+				Math.floor(
+					Math.min(screenWidth / width, screenHeight / height),
+				),
+				1,
+			),
 		},
 		mouse: {
 			pos: V.vec(0, 0),
@@ -237,7 +359,7 @@ function initCanvas(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
 			const now = performance.now()
 			const dt = now - appLoop.lastTime
 
-			if (dt > 1) {
+			if (dt > 10) {
 				appLoop.fps = 1000 / dt
 				appLoop.lastTime = now
 				update(dt, state)
@@ -265,13 +387,13 @@ function App() {
 	function handlePointerDown(event: PointerEvent) {
 		if (appRef.current) {
 			appRef.current.state.mouse.down = true
-      handlePointerMove(event)
+			handlePointerMove(event)
 		}
 	}
 
 	function handlePointerMove(event: PointerEvent) {
 		if (appRef.current) {
-			const {offsetX, offsetY} = event.nativeEvent
+			const { offsetX, offsetY } = event.nativeEvent
 			const x = Math.floor(offsetX / appRef.current.state.config.cellSize)
 			const y = Math.floor(offsetY / appRef.current.state.config.cellSize)
 			appRef.current.state.mouse.pos = V.vec(x, y)
